@@ -20,7 +20,7 @@ const (
 )
 
 // validKeyFormat is the format that is expected for key names inside parameter store
-var validKeyFormat = regexp.MustCompile(`^\/[A-Za-z0-9-_]+\/[A-Za-z0-9-_]+$`)
+var validKeyFormat = regexp.MustCompile(`^\/[A-Za-z0-9-_]+\/[A-Za-z0-9-_\.]+$`)
 
 // SSMStore implements the Store interface for storing secrets in SSM Parameter
 // Store
@@ -29,7 +29,7 @@ type SSMStore struct {
 }
 
 // NewSSMStore creates a new SSMStore
-func NewSSMStore() *SSMStore {
+func NewSSMStore(numRetries int) *SSMStore {
 	region, ok := os.LookupEnv("AWS_REGION")
 	if !ok {
 		// If region is not set, attempt to determine it via ec2 metadata API
@@ -41,7 +41,7 @@ func NewSSMStore() *SSMStore {
 	ssmSession := session.Must(session.NewSession(&aws.Config{
 		Region: aws.String(region),
 	}))
-	svc := ssm.New(ssmSession)
+	svc := ssm.New(ssmSession, &aws.Config{MaxRetries: aws.Int(numRetries)})
 	return &SSMStore{
 		svc: svc,
 	}
@@ -154,7 +154,6 @@ func (s *SSMStore) readLatest(id SecretId) (Secret, error) {
 		return Secret{}, ErrSecretNotFound
 	}
 	param := resp.Parameters[0]
-
 	// To get metadata, we need to use describe parameters
 	// There is no way to use describe parameters to get a single key
 	// if that key uses paths, so instead get all the keys for a path,
@@ -169,11 +168,11 @@ func (s *SSMStore) readLatest(id SecretId) (Secret, error) {
 		},
 	}
 
-	var parameterMeta *ssm.ParameterMetadata
+	var parameter *ssm.ParameterMetadata
 	if err := s.svc.DescribeParametersPages(describeParametersInput, func(o *ssm.DescribeParametersOutput, lastPage bool) bool {
 		for _, param := range o.Parameters {
 			if *param.Name == idToName(id) {
-				parameterMeta = param
+				parameter = param
 			}
 		}
 		return !lastPage
@@ -181,11 +180,11 @@ func (s *SSMStore) readLatest(id SecretId) (Secret, error) {
 		return Secret{}, err
 	}
 
-	if parameterMeta == nil {
+	if parameter == nil {
 		return Secret{}, ErrSecretNotFound
 	}
 
-	secretMeta := parameterMetaToSecretMeta(parameterMeta)
+	secretMeta := parameterMetaToSecretMeta(parameter)
 
 	return Secret{
 		Value: param.Value,
